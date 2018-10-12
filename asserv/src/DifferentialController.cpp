@@ -3,62 +3,151 @@
 #else
   #include "WProgram.h"
 #endif
-
 #include "DifferentialController.hpp"
 
-#define MAX_PWM 255
+/*public:
+     ** Constructeur, initialise l'asservissement
+     * @dP asserv de distance : proportionnel
+     * @dI asserv de distance : intégral
+     * @dD asserv de distance : intégral
+     * @aP asserv d'angle : intégral
+     * @aI asserv d'angle : intégral
+     * @aD asserv d'angle : intégral
+     *
+    DifferentialController(double dP,double dI,double dD,double aP,double aI,double aD);
+    void update(double currentX,double currentY, double currentAngle);
+    void setTarget(double targetAngle, double targetX = NAN, double targetY = NAN, forceForward = false);
+    int getLeftMotorCommand();
+    int getRightMotorCommand();
+    void reconfigPID(double dP,double dI,double dD,double aP,double aI,double aD);
+    bool hasReachedObjective();
+    void reset();
+  private:
+    PID *distancePID;
+    CuPID *anglePID;
+    double d_Current, d_Command;
+    double a_Current, a_Target, a_Command;
+    double targetX, targetY, targetAngle;
+    bool hasReachedObjective;
+*/
 
-double cap(double in,double c){
-  if(abs(in)>c)return in/abs(in)*c;
-  else return in;
+DifferentialController::DifferentialController(double dP,double dI,double dD,double aP,double aI,double aD){
+  targetX = 0;
+  targetY = 0;
+  targetAngle = 0;
+
+  d_Target = 0;
+  a_Target = 0;
+
+  hasReachedObjective = false; // Le robot chercheras à se mettre face à son objectif
+
+  distancePID = new PID(&d_Current/*,&d_Target*/,&d_Command,dP,dI,dD); // Command est un output, l'objectif est tjrs 0
+  anglePID = new CuPID(&a_Current,&a_Target,&a_Command,aP,aI,aD); // Command est un output, a_Target varie.
 }
 
-DifferentialController::DifferentialController(double dp,double di,double dd,double ap,double ai,double ad){
-  distancePID = new PID(&din,&dtar,&dout,dp,di,dd);
-  anglePID = new CuPID(&ain,&atar,&aout,ap,ai,ad);
+void DifferentialController::update(double currentX,double currentY, double currentA){
+  // Pre-calcul:
+
+  // Calcul de la distance à l'objectif
+  computedDistance=sqrt(pow(targetX-currentX,2)+pow(targetY-currentY,2));
+
+  // Calcul de l'angle à l'objectif
+  computedAngle=atan2(targetY-currentY,targetX-currentX);
+
+  while(computedAngle<-PI)computedAngle+=PI;
+  while(computedAngle>PI)computedAngle-=PI;
+
+  /* Un modulo pour l'angle (-PI/2, PI/2). ça veux dire qu'il peut reculer pour aller à son objectif
+  // TODO: implement forceForward check
+  if(abs(abs(currentA)-abs(computedAngle))>PI/2){
+    if(computedAngle>0){
+      computedAngle-=PI;
+    }else{
+      computedAngle+=PI;
+    }
+  }*/
+
+  // Switch de comportement à l'arrivée sur l'objectif
+  if(computedDistance<10 || (hasReachedObjective)){
+    // reset des PIDs
+    if(!hasReachedObjective){
+      distancePID->reset();
+      anglePID->reset();
+      hasReachedObjective = true;
+    }
+
+    // commande pid distance:
+    d_Target = 0;
+    d_Current=computedDistance;
+    distancePID->compute();
+
+    //command pid angle:
+    a_Current=currentA;
+    a_Target=targetAngle;
+    anglePID->compute();
+  }else{
+
+    //command pid angle:
+    a_Current=currentA;
+    a_Target=computedAngle;
+    anglePID->compute();
+
+    // commande pid distance:
+    d_Target = 0;
+    d_Current=computedDistance;
+    distancePID->compute();
+  }
+
+  //On s'assure que les commandes sont envoyées de manière homogènes
+  if(abs(d_Command)+abs(a_Command)>MAX_PWM){ // Pour que les commandes soient mitigées de manière homogène
+    reduc = max(0.7,MAX_PWM/(abs(d_Command)+abs(a_Command)));
+  }else{
+    reduc = 1;
+  }
 }
-void DifferentialController::update(double x,double y, double a){
-  double cd=sqrt(pow(tx-x,2)+pow(ty-y,2));
-  double ca=atan2(ty-y,tx-x);
-  //angle
-  if(cd>1) atar=ca;
-  else atar=ta;
-  ain=a;
-  anglePID->compute();
-  //distance
-  dtar=0;
-  din=cd;
-  distancePID->compute(anglePID->isFacingFront());
+
+void DifferentialController::setTarget(double iTargetA, double iTargetX, double iTargetY, bool forceForward){
+  this->reset();
+  hasReachedObjective = false;
+  targetX=iTargetX;
+  targetY=iTargetY;
+  targetAngle=iTargetA;
 }
-void DifferentialController::setTarget(double x,double y, double a){
-  tx=x;
-  ty=y;
-  ta=a;
+
+int out;
+int DifferentialController::getLeftMotorCommand(){
+  /*if(hasReachedObjective){
+    return 0;
+  }*/
+  out=-a_Command;
+
+  if(abs(computedAngle-a_Current)<3.1415926535/2){
+    out-=d_Command;
+  }else{
+    out+=d_Command;
+  }
+  return max(-MAX_PWM, min(out*reduc, MAX_PWM));
 }
-unsigned int balance;
-unsigned int reduc;
-int DifferentialController::getLeft(){
-  return max(-MAX_PWM, min(dout, MAX_PWM));
-  // + aout
+
+//delay = 0;
+int DifferentialController::getRightMotorCommand(){
+  /*if(hasReachedObjective){
+    return 0;
+  }*/
+  out=+a_Command;
+  if(abs(computedAngle-a_Current)<3.1415926535/2){
+    out-=d_Command;
+  }else{
+    out+=d_Command;
+  }
+  return max(-MAX_PWM, min(out*reduc, MAX_PWM));
 }
-int DifferentialController::getRight(){
-  return max(-MAX_PWM, min(dout, MAX_PWM));
-  // - aout
-}
-void DifferentialController::setFactors(double dp,double di,double dd,double ap,double ai,double ad){
-  distancePID->set(dp,di,dd);
-  anglePID->set(ap,ai,ad);
-}
-double DifferentialController::getFactor(int i){
-  if(i==0) return distancePID->getP();
-  if(i==1) return distancePID->getI();
-  if(i==2) return distancePID->getD();
-  if(i==3) return anglePID->getP();
-  if(i==4) return anglePID->getI();
-  if(i==5) return anglePID->getD();
-  return 0;
-}
+
 void DifferentialController::reset(){
   distancePID->reset();
   anglePID->reset();
+}
+
+bool DifferentialController::isObjectiveReached(){
+  return hasReachedObjective;
 }

@@ -14,6 +14,7 @@ Motor::Motor(int pwm,int p1,int p2){
   pins[0]=pwm;
   pins[1]=p1;
   pins[2]=p2;
+  analogWriteFrequency(pwm, 25000);
   for(int i=0;i<3;i++){
     pinMode(pins[i],OUTPUT);
     digitalWrite(pins[i],LOW);
